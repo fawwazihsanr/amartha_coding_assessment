@@ -53,56 +53,59 @@ func IsDelinquent(db *gorm.DB, loanID uint) (bool, error) {
 }
 
 func MakePayment(db *gorm.DB, loanID uint, paymentAmount int) error {
-	var payments []models.AccountPayment
+	return db.Transaction(func(tx *gorm.DB) error {
+		var payments []models.AccountPayment
 
-	err := db.Where("loan_id = ? AND due_amount > 0", loanID).Order("due_date ASC").Find(&payments).Error
-	if err != nil {
-		return errors.New("failed to fetch payments: " + err.Error())
-	}
-
-	if len(payments) == 0 {
-		return errors.New("no pending payments for this loan")
-	}
-
-	remainingAmount := paymentAmount
-	paidDate := time.Now()
-	for i := range payments {
-		if remainingAmount <= 0 {
-			break
+		err := tx.Where("loan_id = ? AND due_amount > 0", loanID).Order("due_date ASC").Find(&payments).Error
+		if err != nil {
+			return errors.New("failed to fetch payments: " + err.Error())
 		}
 
-		payment := &payments[i]
-		if remainingAmount >= payment.DueAmount {
-			remainingAmount -= payment.DueAmount
-			payment.DueAmount = 0
-			payment.PrincipalAmount = 0
-			payment.InterestAmount = 0
-			payment.PaidDate = &paidDate
-			payment.PaidAmount = &remainingAmount
-		} else {
-			payment.DueAmount -= remainingAmount
+		if len(payments) == 0 {
+			return errors.New("no pending payments for this loan")
+		}
 
-			if payment.PrincipalAmount > 0 {
-				principalReduction := (payment.PrincipalAmount * remainingAmount) / (payment.PrincipalAmount + payment.InterestAmount)
-				payment.PrincipalAmount -= principalReduction
-				payment.InterestAmount -= remainingAmount - principalReduction
-			} else {
-				payment.InterestAmount -= remainingAmount
+		remainingAmount := paymentAmount
+		paidDate := time.Now()
+
+		for i := range payments {
+			if remainingAmount <= 0 {
+				break
 			}
 
-			remainingAmount = 0
+			payment := &payments[i]
+			if remainingAmount >= payment.DueAmount {
+				remainingAmount -= payment.DueAmount
+				payment.DueAmount = 0
+				payment.PrincipalAmount = 0
+				payment.InterestAmount = 0
+				payment.PaidDate = &paidDate
+				payment.PaidAmount = &remainingAmount
+			} else {
+				payment.DueAmount -= remainingAmount
+
+				if payment.PrincipalAmount > 0 {
+					principalReduction := (payment.PrincipalAmount * remainingAmount) / (payment.PrincipalAmount + payment.InterestAmount)
+					payment.PrincipalAmount -= principalReduction
+					payment.InterestAmount -= remainingAmount - principalReduction
+				} else {
+					payment.InterestAmount -= remainingAmount
+				}
+
+				remainingAmount = 0
+			}
+
+			err = tx.Save(payment).Error
+			if err != nil {
+				return errors.New("failed to update payment record: " + err.Error())
+			}
 		}
 
-		err = db.Save(payment).Error
-		if err != nil {
-			return errors.New("failed to update payment record: " + err.Error())
-		}
-	}
+		// Handle any cashback or refund logic here
+		if remainingAmount > 0 {
 
-	// should handle cashback or refund here
-	if remainingAmount > 0 {
+		}
+
 		return nil
-	}
-
-	return nil
+	})
 }
